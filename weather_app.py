@@ -92,6 +92,23 @@ def _cache_matches_request(
     return False
 
 
+def _get_error_message(status_code: int) -> str:
+    """Возвращает короткое сообщение об ошибке по HTTP статус-коду."""
+    error_messages = {
+        401: "Неверный API ключ",
+        404: "Город или координаты не найдены",
+        429: "Превышен лимит запросов",
+    }
+    
+    if status_code in error_messages:
+        return error_messages[status_code]
+    
+    if 500 <= status_code <= 599:
+        return "Ошибка сервера"
+    
+    return f"Ошибка HTTP {status_code}"
+
+
 def _request_with_retries(url: str, *, timeout_seconds: float = 10.0) -> requests.Response:
     backoffs = [1, 2, 4]
     last_exc: Optional[BaseException] = None
@@ -153,7 +170,7 @@ def get_coordinates(city: str) -> tuple:
             return None
         return data[0]["lat"], data[0]["lon"]
     else:
-        print(f"Ошибка: {response.status_code}")
+        print(_get_error_message(response.status_code))
         return None
 
 def get_weather_by_coordinates(latitude: float, longitude: float) -> dict:
@@ -162,7 +179,7 @@ def get_weather_by_coordinates(latitude: float, longitude: float) -> dict:
     if response.status_code == 200:
         return response.json()
     else:
-        print(f"Ошибка: {response.status_code}")
+        print(_get_error_message(response.status_code))
         return None
 
 
