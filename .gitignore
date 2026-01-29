@@ -135,3 +135,5 @@ Thumbs.db
 
 # Project specific
 currency_rate.json
+weather_cache.json
+User_Data.json
