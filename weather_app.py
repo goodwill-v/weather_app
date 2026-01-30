@@ -621,7 +621,7 @@ def _show_forecast_interactive(city: Optional[str] = None, lat: Optional[float] 
 
 def _print_air_pollution(analysis: dict) -> None:
     """Выводит результаты анализа загрязнения воздуха в терминал."""
-    print("\n=== Загрязнение воздуха ===")
+    print("\n=== Состав воздуха ===")
     print(f"Статус: {analysis.get('status', 'N/A')}")
     print(f"Индекс качества воздуха (AQI): {analysis.get('aqi', 'N/A')}")
     print(f"Уровень: {analysis.get('level_name', 'N/A')}")
@@ -632,10 +632,48 @@ def _print_air_pollution(analysis: dict) -> None:
         for item in exceeded:
             print(f"  {item['component']}: {item['value']} µg/m³ (норма до {item['threshold']}, превышение +{item['excess']})")
     
-    if analysis.get("components"):
+    components = analysis.get("components")
+    if components:
         print("\nКомпоненты (µg/m³):")
-        for key, value in analysis["components"].items():
-            print(f"  {key}: {value}")
+        component_names = {
+            "co": ("Оксид углерода", "CO"),
+            "no": ("Оксид азота", "NO"),
+            "no2": ("Диоксид азота", "NO2"),
+            "o3": ("Озон", "O3"),
+            "so2": ("Диоксид серы", "SO2"),
+            "pm2_5": ("Частицы PM2.5", "PM2.5"),
+            "pm10": ("Частицы PM10", "PM10"),
+            "nh3": ("Аммиак", "NH3"),
+        }
+        thresholds = analysis.get("thresholds", {})
+
+        def _format_value(value: Any) -> str:
+            try:
+                formatted = f"{float(value):.2f}"
+            except (TypeError, ValueError):
+                return "N/A"
+            return formatted.replace(".", ",")
+
+        def _evaluate_component(value: Any, threshold: Optional[float]) -> str:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return "нет данных"
+            if threshold is None:
+                return "нет нормы"
+            if numeric <= threshold * 0.5:
+                return "хорошо"
+            if numeric <= threshold:
+                return "удовлетворительно"
+            if numeric <= threshold * 1.5:
+                return "умеренно"
+            return "плохо"
+
+        for key, value in components.items():
+            name, formula = component_names.get(key, (key.upper(), key.upper()))
+            threshold = thresholds.get(key)
+            status = _evaluate_component(value, threshold)
+            print(f"  {name} ({formula}) — {_format_value(value)} — {status}")
 
 
 def _show_air_pollution_interactive(city: Optional[str] = None, lat: Optional[float] = None, lon: Optional[float] = None) -> None:
@@ -651,11 +689,11 @@ def _show_air_pollution_interactive(city: Optional[str] = None, lat: Optional[fl
         print("Не указаны координаты или город.")
         return
     
-    print("Получаем данные о загрязнении воздуха...")
+    print("Получаем данные о составе воздуха...")
     pollution_data = get_air_pollution(lat, lon)
     
     if not pollution_data:
-        print("Не удалось получить данные о загрязнении воздуха.")
+        print("Не удалось получить данные о составе воздуха.")
         return
     
     analysis = analyze_air_pollution(pollution_data, extended=True)
@@ -672,7 +710,7 @@ def main() -> None:
         print("2 — Текущая погода по координатам")
         print("3 — Прогноз на 5 дней по городу")
         print("4 — Прогноз на 5 дней по координатам")
-        print("5 — Загрязнение воздуха")
+        print("5 — Состав воздуха")
         print("6 — Показать кэш")
         print("0 — Выход")
 
@@ -726,7 +764,7 @@ def main() -> None:
             continue
 
         if choice == "5":
-            sub = input("Загрязнение воздуха: по городу (1) или по координатам (2)? ").strip()
+            sub = input("Состав воздуха: по городу (1) или по координатам (2)? ").strip()
             if sub == "1":
                 city = _prompt_city(default_city)
                 if not city:

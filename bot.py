@@ -29,9 +29,11 @@ DATA_PATH = Path(__file__).with_name("User_Data.json")
 STATE_WAIT_CITY = "wait_city_weather"
 STATE_WAIT_FORECAST_LOCATION = "wait_forecast_location"
 STATE_WAIT_GEO_WEATHER = "wait_geo_weather"
-STATE_WAIT_SUBSCRIBE = "wait_subscribe"
 STATE_WAIT_COMPARE = "wait_compare"
 STATE_WAIT_EXTENDED = "wait_extended"
+STATE_WAIT_AIR_MODE = "wait_air_mode"
+STATE_WAIT_AIR_CITY = "wait_air_city"
+STATE_WAIT_AIR_GEO = "wait_air_geo"
 
 user_states: dict[int, dict[str, Any]] = {}
 forecast_cache: dict[int, dict[str, Any]] = {}
@@ -249,9 +251,9 @@ def _format_day_details(day_forecasts: list[dict]) -> str:
 
 def _build_main_keyboard() -> types.ReplyKeyboardMarkup:
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.row("Погода сейчас (город)", "Прогноз 5 дней (моя гео)")
-    keyboard.row("Погода по гео", "Уведомления (вкл/выкл)")
-    keyboard.row("Сравнение городов", "Расширенные данные")
+    keyboard.row("🌦️ Погода сейчас (город)", "🗓️ Прогноз 5 дней (моя гео)")
+    keyboard.row("📍 Погода по гео", "🌫️ Состав воздуха")
+    keyboard.row("⚖️ Сравнение городов", "📊 Расширенные данные")
     return keyboard
 
 
@@ -339,7 +341,7 @@ def _format_extended_weather(weather: dict[str, Any]) -> str:
     if wind_deg is not None:
         wind_info += f", {_format_wind_direction(wind_deg)} ({wind_deg}°)"
 
-    pollution_line = "Загрязнение воздуха: нет данных"
+    pollution_line = "Состав воздуха: нет данных"
     lat = coord.get("lat")
     lon = coord.get("lon")
     if lat is not None and lon is not None:
@@ -348,7 +350,7 @@ def _format_extended_weather(weather: dict[str, Any]) -> str:
         if analysis:
             aqi = analysis.get("aqi", "N/A")
             level = analysis.get("level_name", "N/A")
-            pollution_line = f"Загрязнение воздуха: AQI {aqi} — {level}"
+            pollution_line = f"Состав воздуха: AQI {aqi} — {level}"
 
     return (
         f"Расширенные данные: {name}\n"
@@ -364,6 +366,69 @@ def _format_extended_weather(weather: dict[str, Any]) -> str:
         f"УФ индекс: нет данных\n"
         f"{pollution_line}"
     )
+
+
+def _format_air_composition(analysis: dict[str, Any], location_label: str) -> str:
+    lines = [
+        location_label,
+        "Состав воздуха",
+        f"Статус: {analysis.get('status', 'N/A')}",
+        f"Индекс качества воздуха (AQI): {analysis.get('aqi', 'N/A')}",
+        f"Уровень: {analysis.get('level_name', 'N/A')}",
+    ]
+    components = analysis.get("components")
+    if components:
+        lines.append("")
+        lines.append("Компоненты (µg/m³):")
+        component_names = {
+            "co": ("Оксид углерода", "CO"),
+            "no": ("Оксид азота", "NO"),
+            "no2": ("Диоксид азота", "NO2"),
+            "o3": ("Озон", "O3"),
+            "so2": ("Диоксид серы", "SO2"),
+            "pm2_5": ("Частицы PM2.5", "PM2.5"),
+            "pm10": ("Частицы PM10", "PM10"),
+            "nh3": ("Аммиак", "NH3"),
+        }
+        thresholds = analysis.get("thresholds", {})
+
+        def _format_value(value: Any) -> str:
+            try:
+                formatted = f"{float(value):.2f}"
+            except (TypeError, ValueError):
+                return "N/A"
+            return formatted.replace(".", ",")
+
+        def _evaluate_component(value: Any, threshold: Optional[float]) -> str:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return "нет данных"
+            if threshold is None:
+                return "нет нормы"
+            if numeric <= threshold * 0.5:
+                return "хорошо"
+            if numeric <= threshold:
+                return "удовлетворительно"
+            if numeric <= threshold * 1.5:
+                return "умеренно"
+            return "плохо"
+
+        for key, value in components.items():
+            name, formula = component_names.get(key, (key.upper(), key.upper()))
+            threshold = thresholds.get(key)
+            status = _evaluate_component(value, threshold)
+            lines.append(f"- {name} ({formula}) — {_format_value(value)} — {status}")
+    return "\n".join(lines)
+
+
+def _send_air_composition(chat_id: int, lat: float, lon: float, location_label: str) -> None:
+    pollution = get_air_pollution(lat, lon)
+    if not pollution:
+        bot.send_message(chat_id, "Не удалось получить состав воздуха.")
+        return
+    analysis = analyze_air_pollution(pollution, extended=True)
+    bot.send_message(chat_id, _format_air_composition(analysis, location_label))
 
 
 def _set_subscription(user_id: int, enabled: bool) -> None:
@@ -492,6 +557,10 @@ def handle_location(message: types.Message) -> None:
         else:
             bot.send_message(message.chat.id, "Не удалось получить погоду.")
         return
+    if state == STATE_WAIT_AIR_GEO:
+        location_label = f"Координаты: {lat:.4f}, {lon:.4f}"
+        _send_air_composition(message.chat.id, lat, lon, location_label)
+        return
     if state == STATE_WAIT_EXTENDED:
         weather = get_current_weather(latitude=lat, longitude=lon)
         if isinstance(weather, dict):
@@ -569,13 +638,34 @@ def handle_text(message: types.Message) -> None:
         bot.send_message(message.chat.id, table, parse_mode="Markdown")
         return
 
-    if state == STATE_WAIT_SUBSCRIBE:
+    if state == STATE_WAIT_AIR_MODE:
+        choice = text.strip()
+        if choice == "1":
+            user_states[user_id] = {"state": STATE_WAIT_AIR_CITY}
+            bot.send_message(message.chat.id, "Введите название города.")
+            return
+        if choice == "2":
+            user_states[user_id] = {"state": STATE_WAIT_AIR_GEO}
+            bot.send_message(
+                message.chat.id,
+                "Отправьте местоположение.",
+                reply_markup=_build_location_keyboard(),
+            )
+            return
+        bot.send_message(message.chat.id, "Введите 1 или 2.")
+        return
+
+    if state == STATE_WAIT_AIR_CITY:
         _clear_state(user_id)
-        answer = text.lower()
-        enabled = answer in ("да", "yes", "y", "д")
-        _set_subscription(user_id, enabled)
-        status = "включены" if enabled else "отключены"
-        bot.send_message(message.chat.id, f"Погодные уведомления {status}.")
+        city = text
+        _set_user_last_city(user_id, city)
+        coords = get_coordinates(city)
+        if not coords:
+            bot.send_message(message.chat.id, "Не удалось получить координаты города.")
+            return
+        lat, lon = coords
+        location_label = f"Город: {city}"
+        _send_air_composition(message.chat.id, lat, lon, location_label)
         return
 
     if state == STATE_WAIT_EXTENDED:
@@ -589,14 +679,14 @@ def handle_text(message: types.Message) -> None:
             bot.send_message(message.chat.id, "Не удалось получить данные.")
         return
 
-    if text == "Погода сейчас (город)":
+    if text == "🌦️ Погода сейчас (город)":
         user_states[user_id] = {"state": STATE_WAIT_CITY}
         last_city = _get_user_last_city(user_id)
         hint = f" (например, {last_city})" if last_city else ""
         bot.send_message(message.chat.id, f"Введите название города{hint}.")
         return
 
-    if text == "Прогноз 5 дней (моя гео)":
+    if text == "🗓️ Прогноз 5 дней (моя гео)":
         location = _get_user_location(user_id)
         if location:
             _send_forecast_inline(message.chat.id, user_id, location["lat"], location["lon"])
@@ -609,7 +699,7 @@ def handle_text(message: types.Message) -> None:
             )
         return
 
-    if text == "Погода по гео":
+    if text == "📍 Погода по гео":
         user_states[user_id] = {"state": STATE_WAIT_GEO_WEATHER}
         bot.send_message(
             message.chat.id,
@@ -618,12 +708,15 @@ def handle_text(message: types.Message) -> None:
         )
         return
 
-    if text == "Уведомления (вкл/выкл)":
-        user_states[user_id] = {"state": STATE_WAIT_SUBSCRIBE}
-        bot.send_message(message.chat.id, "Включить уведомления? (да/нет)")
+    if text == "🌫️ Состав воздуха":
+        user_states[user_id] = {"state": STATE_WAIT_AIR_MODE}
+        bot.send_message(
+            message.chat.id,
+            "Состав воздуха: по городу (1) или по координатам (2)?",
+        )
         return
 
-    if text == "Сравнение городов":
+    if text == "⚖️ Сравнение городов":
         user_states[user_id] = {"state": STATE_WAIT_COMPARE}
         bot.send_message(
             message.chat.id,
@@ -631,7 +724,7 @@ def handle_text(message: types.Message) -> None:
         )
         return
 
-    if text == "Расширенные данные":
+    if text == "📊 Расширенные данные":
         user_states[user_id] = {"state": STATE_WAIT_EXTENDED}
         bot.send_message(
             message.chat.id,
